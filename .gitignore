@@ -1,0 +1,14 @@
+results/
+results_refined/
+results_tuned/
+__pycache__/
+*.pyc
+*.jpg
+*.jpeg
+*.JPG
+*.JPEG
+*.png
+*.tif
+*.tiff
+*.bmp
+
