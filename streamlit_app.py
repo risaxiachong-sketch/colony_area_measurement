@@ -18,15 +18,98 @@ from measure_colony_area import IMAGE_EXTENSIONS, Measurement, measure_image, re
 APP_TITLE = "シャーレ菌叢 解析"
 UPLOAD_EXTENSIONS = sorted(ext.lstrip(".") for ext in IMAGE_EXTENSIONS) + ["zip"]
 
+ANALYSIS_PRESETS = {
+    "標準（黄色・黒色中心）": {
+        "description": "これまでのスコポレチン培地のように、黄色〜ベージュの菌糸と黒い中心部を拾います。",
+        "analysis_mode": "mixed",
+        "color_delta": 24.0,
+        "yellow_delta": 5.0,
+        "dark_delta": 35.0,
+        "white_delta": 10.0,
+        "texture_delta": 6.0,
+        "brown_delta": 7.0,
+        "inner_plate_frac": 0.82,
+        "background_inner_frac": 0.45,
+        "background_outer_frac": 0.75,
+        "min_component_frac": 0.0004,
+        "seed_radius_frac": 0.22,
+        "keep_center_frac": 0.38,
+        "footprint_close_frac": 0.08,
+    },
+    "白色菌糸を拾う": {
+        "description": "白い枝状の菌糸を拾いやすくします。色よりも明るさと細かい線状のコントラストを重視します。",
+        "analysis_mode": "light_mycelium",
+        "color_delta": 16.0,
+        "yellow_delta": 3.0,
+        "dark_delta": 35.0,
+        "white_delta": 6.0,
+        "texture_delta": 4.0,
+        "brown_delta": 7.0,
+        "inner_plate_frac": 0.90,
+        "background_inner_frac": 0.76,
+        "background_outer_frac": 0.92,
+        "min_component_frac": 0.00005,
+        "seed_radius_frac": 0.24,
+        "keep_center_frac": 0.60,
+        "footprint_close_frac": 0.06,
+    },
+    "茶色色素も含める": {
+        "description": "菌糸だけでなく、茶色〜黄色に変色した培地部分も菌叢として含めます。",
+        "analysis_mode": "pigment_included",
+        "color_delta": 18.0,
+        "yellow_delta": 2.0,
+        "dark_delta": 35.0,
+        "white_delta": 7.0,
+        "texture_delta": 4.0,
+        "brown_delta": 5.0,
+        "inner_plate_frac": 0.90,
+        "background_inner_frac": 0.76,
+        "background_outer_frac": 0.92,
+        "min_component_frac": 0.00008,
+        "seed_radius_frac": 0.24,
+        "keep_center_frac": 0.65,
+        "footprint_close_frac": 0.08,
+    },
+    "外縁面積を測る": {
+        "description": "枝のすき間をある程度埋めて、菌叢が広がった外側の範囲を測ります。",
+        "analysis_mode": "footprint",
+        "color_delta": 18.0,
+        "yellow_delta": 2.0,
+        "dark_delta": 35.0,
+        "white_delta": 7.0,
+        "texture_delta": 4.0,
+        "brown_delta": 5.0,
+        "inner_plate_frac": 0.90,
+        "background_inner_frac": 0.76,
+        "background_outer_frac": 0.92,
+        "min_component_frac": 0.00008,
+        "seed_radius_frac": 0.24,
+        "keep_center_frac": 0.70,
+        "footprint_close_frac": 0.10,
+    },
+}
+
 
 def make_args(
     plate_diameter_mm: float,
+    analysis_mode: str,
     color_delta: float,
     yellow_delta: float,
     dark_delta: float,
+    white_delta: float,
+    texture_delta: float,
+    brown_delta: float,
     inner_plate_frac: float,
+    background_inner_frac: float,
+    background_outer_frac: float,
+    min_component_frac: float,
+    seed_radius_frac: float,
+    keep_center_frac: float,
+    footprint_close_frac: float,
 ) -> SimpleNamespace:
     """measure_colony_area.py に渡す解析設定を作ります。"""
+
+    background_outer_frac = max(background_outer_frac, background_inner_frac + 0.02)
 
     return SimpleNamespace(
         plate=None,
@@ -36,14 +119,19 @@ def make_args(
         max_radius_frac=0.42,
         hough_param2=35.0,
         inner_plate_frac=inner_plate_frac,
-        background_inner_frac=0.45,
-        background_outer_frac=0.75,
+        background_inner_frac=background_inner_frac,
+        background_outer_frac=background_outer_frac,
         color_delta=color_delta,
         yellow_delta=yellow_delta,
         dark_delta=dark_delta,
-        min_component_frac=0.0004,
-        seed_radius_frac=0.22,
-        keep_center_frac=0.38,
+        min_component_frac=min_component_frac,
+        seed_radius_frac=seed_radius_frac,
+        keep_center_frac=keep_center_frac,
+        analysis_mode=analysis_mode,
+        white_delta=white_delta,
+        texture_delta=texture_delta,
+        brown_delta=brown_delta,
+        footprint_close_frac=footprint_close_frac,
     )
 
 
@@ -304,11 +392,28 @@ def main() -> None:
 
     with st.sidebar:
         st.header("解析設定")
+        preset_name = st.selectbox("菌の種類・解析目的", list(ANALYSIS_PRESETS.keys()))
+        preset = ANALYSIS_PRESETS[preset_name]
+        st.caption(str(preset["description"]))
+
         plate_diameter_mm = st.number_input("シャーレ直径 mm", min_value=1.0, value=90.0, step=1.0)
-        color_delta = st.slider("背景との差の強さ", 5.0, 60.0, 24.0, 1.0)
-        yellow_delta = st.slider("黄色〜ベージュ部分の拾いやすさ", 0.0, 20.0, 5.0, 1.0)
-        dark_delta = st.slider("黒い中心部の拾いやすさ", 5.0, 80.0, 35.0, 1.0)
-        inner_plate_frac = st.slider("シャーレ内側だけを解析する割合", 0.60, 0.95, 0.82, 0.01)
+
+        with st.expander("詳細設定", expanded=False):
+            st.caption("オーバーレイ画像を見ながら、拾いすぎ・拾わなさすぎを調整します。")
+            color_delta = st.slider("背景との差の強さ", 5.0, 60.0, float(preset["color_delta"]), 1.0)
+            yellow_delta = st.slider("黄色〜ベージュ部分の拾いやすさ", 0.0, 20.0, float(preset["yellow_delta"]), 1.0)
+            dark_delta = st.slider("黒い中心部の拾いやすさ", 5.0, 80.0, float(preset["dark_delta"]), 1.0)
+            white_delta = st.slider("白い菌糸の拾いやすさ", 0.0, 30.0, float(preset["white_delta"]), 1.0)
+            texture_delta = st.slider("細い枝状菌糸の拾いやすさ", 0.0, 25.0, float(preset["texture_delta"]), 1.0)
+            brown_delta = st.slider("茶色い色素の拾いやすさ", 0.0, 25.0, float(preset["brown_delta"]), 1.0)
+            inner_plate_frac = st.slider("シャーレ内側だけを解析する割合", 0.60, 0.95, float(preset["inner_plate_frac"]), 0.01)
+            footprint_close_frac = st.slider(
+                "外縁面積で枝のすき間を埋める強さ",
+                0.02,
+                0.18,
+                float(preset["footprint_close_frac"]),
+                0.01,
+            )
 
     input_mode = st.radio(
         "入力方法",
@@ -345,10 +450,20 @@ def main() -> None:
 
     args = make_args(
         plate_diameter_mm=plate_diameter_mm,
+        analysis_mode=str(preset["analysis_mode"]),
         color_delta=color_delta,
         yellow_delta=yellow_delta,
         dark_delta=dark_delta,
+        white_delta=white_delta,
+        texture_delta=texture_delta,
+        brown_delta=brown_delta,
         inner_plate_frac=inner_plate_frac,
+        background_inner_frac=float(preset["background_inner_frac"]),
+        background_outer_frac=float(preset["background_outer_frac"]),
+        min_component_frac=float(preset["min_component_frac"]),
+        seed_radius_frac=float(preset["seed_radius_frac"]),
+        keep_center_frac=float(preset["keep_center_frac"]),
+        footprint_close_frac=footprint_close_frac,
     )
 
     if st.button("解析開始", type="primary", disabled=not ready_to_run):

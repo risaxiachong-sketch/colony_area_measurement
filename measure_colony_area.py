@@ -149,8 +149,14 @@ def segment_colony(
     min_component_frac: float,
     seed_radius_frac: float,
     keep_center_frac: float,
+    analysis_mode: str = "mixed",
+    white_delta: float = 10.0,
+    texture_delta: float = 6.0,
+    brown_delta: float = 7.0,
+    footprint_close_frac: float = 0.08,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     height, width = image.shape[:2]
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
@@ -181,19 +187,78 @@ def segment_colony(
     value = hsv[:, :, 2].astype(np.int16)
 
     dark = (value < bg_hsv[2] - dark_delta) | (lightness < bg_lab[0] - 30)
+
+    local_blur_size = odd_kernel_size(plate.radius * 0.12, minimum=15)
+    local_blur = cv2.GaussianBlur(gray, (local_blur_size, local_blur_size), 0)
+    local_bright = gray.astype(np.int16) - local_blur.astype(np.int16)
+
+    tophat_size = odd_kernel_size(plate.radius * 0.035, minimum=7)
+    tophat_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (tophat_size, tophat_size))
+    white_tophat = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, tophat_kernel).astype(np.int16)
+
+    bright_mycelium = (
+        ((lightness > bg_lab[0] + white_delta) | (value > bg_hsv[2] + white_delta))
+        & ((local_bright > texture_delta) | (white_tophat > texture_delta))
+    )
+
     warm_mycelium = (
         (lab_b > bg_lab[2] + yellow_delta)
         & (saturation > bg_hsv[1] + 4)
         & (value > bg_hsv[2] - 70)
     )
+    brown_pigment = (
+        (lab_b > bg_lab[2] + brown_delta)
+        & (saturation > bg_hsv[1] + 2)
+        & (value > bg_hsv[2] - 100)
+    )
 
-    candidate = plate_inner & ((delta > color_delta) | dark | warm_mycelium)
-    candidate = candidate.astype(np.uint8) * 255
+    mode = analysis_mode.lower()
+    if mode == "light_mycelium":
+        candidate_bool = plate_inner & (bright_mycelium | dark)
+        mycelium_signal = bright_mycelium
+        kernel_size = odd_kernel_size(plate.radius * 0.008)
+        close_size = odd_kernel_size(plate.radius * 0.018)
+        close_iterations = 1
+    elif mode in {"pigment", "pigment_included"}:
+        candidate_bool = plate_inner & (
+            (delta > color_delta)
+            | bright_mycelium
+            | warm_mycelium
+            | brown_pigment
+            | dark
+        )
+        mycelium_signal = bright_mycelium | warm_mycelium | brown_pigment | (delta > color_delta)
+        kernel_size = odd_kernel_size(plate.radius * 0.015)
+        close_size = odd_kernel_size(plate.radius * 0.035)
+        close_iterations = 2
+    elif mode in {"footprint", "outer_footprint"}:
+        candidate_bool = plate_inner & (
+            (delta > color_delta)
+            | bright_mycelium
+            | warm_mycelium
+            | brown_pigment
+            | dark
+        )
+        mycelium_signal = candidate_bool
+        kernel_size = odd_kernel_size(plate.radius * 0.012)
+        close_size = odd_kernel_size(plate.radius * 0.040)
+        close_iterations = 2
+    else:
+        candidate_bool = plate_inner & ((delta > color_delta) | dark | warm_mycelium)
+        mycelium_signal = (
+            ((lab_b > bg_lab[2] + yellow_delta) | (saturation > bg_hsv[1] + 4))
+            & (value > bg_hsv[2] - 75)
+        )
+        kernel_size = odd_kernel_size(plate.radius * 0.025)
+        close_size = kernel_size
+        close_iterations = 2
 
-    kernel_size = odd_kernel_size(plate.radius * 0.025)
+    candidate = candidate_bool.astype(np.uint8) * 255
+
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kernel_size, kernel_size))
+    close_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_size, close_size))
     candidate = cv2.morphologyEx(candidate, cv2.MORPH_OPEN, kernel)
-    candidate = cv2.morphologyEx(candidate, cv2.MORPH_CLOSE, kernel, iterations=2)
+    candidate = cv2.morphologyEx(candidate, cv2.MORPH_CLOSE, close_kernel, iterations=close_iterations)
 
     seed = circle_mask((height, width), plate.cx, plate.cy, int(plate.radius * seed_radius_frac))
     min_area = max(20, int(math.pi * plate.radius**2 * min_component_frac))
@@ -212,19 +277,30 @@ def segment_colony(
         if overlap > 0 or center_distance <= plate.radius * keep_center_frac:
             selected[component] = 255
 
-    selected = cv2.morphologyEx(selected, cv2.MORPH_CLOSE, kernel)
+    selected = cv2.morphologyEx(selected, cv2.MORPH_CLOSE, close_kernel)
+
+    if mode in {"footprint", "outer_footprint"}:
+        footprint_size = odd_kernel_size(plate.radius * footprint_close_frac, minimum=9)
+        footprint_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (footprint_size, footprint_size))
+        selected = cv2.morphologyEx(selected, cv2.MORPH_CLOSE, footprint_kernel, iterations=2)
+        selected = fill_holes(selected)
+
     selected_bool = selected > 0
     central_core_zone = distance <= plate.radius * max(seed_radius_frac, 0.30)
     dark_core = selected_bool & dark & central_core_zone
-    mycelium = (
-        selected_bool
-        & ~dark_core
-        & ((lab_b > bg_lab[2] + yellow_delta) | (saturation > bg_hsv[1] + 4))
-        & (value > bg_hsv[2] - 75)
-    )
+    mycelium = selected_bool & ~dark_core & mycelium_signal
+
+    if mode in {"footprint", "outer_footprint"}:
+        colony = selected
+        mycelium = selected_bool & ~dark_core
+        return colony, mycelium.astype(np.uint8) * 255, dark_core.astype(np.uint8) * 255, plate_inner.astype(np.uint8) * 255
+
     colony_seed = ((mycelium | dark_core).astype(np.uint8)) * 255
-    colony_seed = cv2.morphologyEx(colony_seed, cv2.MORPH_CLOSE, kernel)
-    colony = fill_holes(colony_seed)
+    colony_seed = cv2.morphologyEx(colony_seed, cv2.MORPH_CLOSE, close_kernel)
+    if mode == "light_mycelium":
+        colony = colony_seed
+    else:
+        colony = fill_holes(colony_seed)
 
     return colony, mycelium.astype(np.uint8) * 255, dark_core.astype(np.uint8) * 255, plate_inner.astype(np.uint8) * 255
 
@@ -281,6 +357,11 @@ def measure_image(path: Path, args: argparse.Namespace, output_dir: Path | None)
         min_component_frac=args.min_component_frac,
         seed_radius_frac=args.seed_radius_frac,
         keep_center_frac=args.keep_center_frac,
+        analysis_mode=getattr(args, "analysis_mode", "mixed"),
+        white_delta=getattr(args, "white_delta", 10.0),
+        texture_delta=getattr(args, "texture_delta", 6.0),
+        brown_delta=getattr(args, "brown_delta", 7.0),
+        footprint_close_frac=getattr(args, "footprint_close_frac", 0.08),
     )
 
     pixel_mm = args.plate_diameter_mm / (2 * plate.radius)
@@ -394,6 +475,16 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-component-frac", type=float, default=0.0004, help="Remove components smaller than this plate area fraction.")
     parser.add_argument("--seed-radius-frac", type=float, default=0.22, help="Center seed radius fraction for colony selection.")
     parser.add_argument("--keep-center-frac", type=float, default=0.38, help="Keep components near plate center.")
+    parser.add_argument(
+        "--analysis-mode",
+        choices=["mixed", "light_mycelium", "pigment_included", "footprint"],
+        default="mixed",
+        help="Segmentation mode for different colony appearances.",
+    )
+    parser.add_argument("--white-delta", type=float, default=10.0, help="Brightness threshold for white mycelium.")
+    parser.add_argument("--texture-delta", type=float, default=6.0, help="Local contrast threshold for filamentous mycelium.")
+    parser.add_argument("--brown-delta", type=float, default=7.0, help="Lab b-channel threshold for brown/yellow pigment.")
+    parser.add_argument("--footprint-close-frac", type=float, default=0.08, help="Close gaps when measuring colony footprint.")
     return parser
 
 
