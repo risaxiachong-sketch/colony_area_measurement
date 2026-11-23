@@ -1,6 +1,10 @@
 results/
 results_refined/
 results_tuned/
+analysis_results/
+**/解析結果/
+.venv/
+.pytest_cache/
 __pycache__/
 *.pyc
 *.jpg

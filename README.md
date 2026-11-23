@@ -1,5 +1,30 @@
 # 菌叢面積計測スクリプトの使い方
 
+## VS Codeで使うプレビュー付きデスクトップ版
+
+新しく使う場合は `measure_colony_desktop.py` を実行してください。
+Windows・Python 3.10以降に対応します。白色菌叢と黒色・褐色菌叢を切り替えて抽出し、
+プレビューで確認・修正した投影面積をCSVに保存できます。
+
+リポジトリをダウンロードし、フォルダをVS Codeで開いてターミナルから実行します。
+
+```powershell
+python -m pip install -r requirements_desktop.txt
+python measure_colony_desktop.py
+```
+
+写真フォルダを選択し、シャーレ円と緑の測定部分を確認して「OK・保存して次へ」を押します。
+接種ディスクを含める場合、最初の1枚で輪郭を指定すれば同じ直径を次の写真へ引き継げます。
+結果画像は各写真フォルダ内の `解析結果/実行日時/` に元の写真名を残して保存します。
+CSVには写真名、処理区、反復番号、撮影時点、総面積(mm²)、解析設定を記録します。
+
+- 詳しい操作方法とCSVの説明: [DESKTOP_GUIDE.md](DESKTOP_GUIDE.md)
+- デスクトップ版の必要ライブラリ: [requirements_desktop.txt](requirements_desktop.txt)
+- 動作検証: `python -m unittest test_colony_desktop.py`
+
+写真・測定CSV・確認画像は同梱していません。グラフ作成とTukey HSD検定は別途行います。
+下記は以前のコマンドライン版の説明です。
+
 このスクリプトは、シャーレ写真から菌叢の面積を自動計測します。
 
 大まかな流れは次の通りです。
